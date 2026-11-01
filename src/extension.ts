@@ -61,6 +61,52 @@ function logBoth(line: string): void {
   getLog().appendLine(line);
 }
 
+/**
+ * 激活期配置路径校验：对用户显式配置的路径逐项做存在性检查，问题汇总到
+ * Output 面板并以一条状态栏警告提示。不阻塞激活——缺的路径只影响对应
+ * 功能（烧录用 yaml、芯片识别 exe、源目录），其余功能照常。
+ */
+function validateConfiguredPaths(): void {
+  const cfg = getConfig();
+  const problems: string[] = [];
+
+  // 1. 芯片描述 yaml：仅当显式配置时校验（空值会走 bundled/内置回退，
+  //    resolveChipDescriptionPath 已处理）
+  if (cfg.chipDescriptionPath && !fs.existsSync(cfg.chipDescriptionPath)) {
+    problems.push(
+      `cw32.chipDescriptionPath 指向的文件不存在：${cfg.chipDescriptionPath}` +
+      `（烧录/识别将尝试家族内置 yaml 回退；删掉该配置项可恢复自动解析）`);
+  }
+
+  // 2. cw32-detect 可执行文件：空值时是 PATH 上的命令名，交给运行期报错；
+  //    显式路径不存在则点名
+  if (cfg.detectPath && cfg.detectPath !== DEFAULT_DETECT_PATH &&
+      !fs.existsSync(cfg.detectPath)) {
+    problems.push(
+      `cw32.detectPath 指向的文件不存在：${cfg.detectPath}` +
+      `（芯片识别命令 cw32.detectChip 将失败；` +
+      `cargo install cw32-detect 或修正该路径）`);
+  }
+
+  // 3. 源目录：显式配置但不是 Cargo 工程根
+  if (cfg.workspaceRoot && !fs.existsSync(path.join(cfg.workspaceRoot, 'Cargo.toml'))) {
+    problems.push(
+      `cw32.workspaceRoot 下没有 Cargo.toml：${cfg.workspaceRoot}` +
+      `（构建/烧录将失败；cw32.setSourceDir 可重新指定，清空恢复自动探测）`);
+  }
+
+  for (const p of problems) {
+    logBoth(`[path-check] ${p}`);
+  }
+  if (problems.length > 0) {
+    void vscode.window.showWarningMessage(
+      `CW32 Tools：${problems.length} 项配置路径有问题（详见输出面板）`, '显示输出')
+      .then((pick) => {
+        if (pick === '显示输出') { getLog().show(); }
+      });
+  }
+}
+
 /* ------------------------------------------------------------
  * 命令执行：spawn + 实时日志 + 超时
  * ---------------------------------------------------------- */
@@ -3135,6 +3181,8 @@ export function activate(context: vscode.ExtensionContext): void {
   extVersion = String((context.extension.packageJSON as { version?: string })?.version ?? extVersion);
   logBoth(`[init] CW32 Tools v${extVersion} 已激活`);
   migrateLegacyIdentity(context);
+  // 配置路径存在性校验：死路径在激活时点名，而不是烧到一半才报错
+  validateConfiguredPaths();
 
   // 恢复上次选择的例程（按工作区持久化）
   const workspaceKey = getWorkspaceRoot() ?? 'default';
